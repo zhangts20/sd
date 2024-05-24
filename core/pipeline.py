@@ -1,82 +1,18 @@
 import os
-import time
 import json
 import torch
 import inspect
 import importlib
 import numpy as np
 
-from typing import Dict, Any
 from PIL import Image
 from tqdm import tqdm
-from diffusers import StableDiffusionPipeline
+from typing import Dict, Any
+from transformers import CLIPImageProcessor, CLIPTextModel, CLIPTokenizer
+from diffusers import PNDMScheduler, UNet2DConditionModel, AutoencoderKL
+from utils import calculate_time
 
-from transformers import CLIPImageProcessor
-from diffusers import PNDMScheduler
-from transformers import CLIPTextModel
-from transformers import CLIPTokenizer
-from diffusers import UNet2DConditionModel
-from diffusers import AutoencoderKL
-
-USE_TRT = os.environ.get("USE_TRT", False)
-if USE_TRT:
-    from trt_engine import TrtSession
-
-
-def calculate_time(func):
-
-    def wrapper(*args, **kwargs):
-        start_time = time.time()
-        result = func(*args, **kwargs)
-        end_time = time.time()
-        print(
-            f"Function {func.__name__} took {round(end_time - start_time, 4)} seconds to execute"
-        )
-        return result
-
-    return wrapper
-
-
-def pipeline_infer(model_dir: str, prompt: str, num_warms: int = 1):
-
-    @calculate_time
-    def load_model(model_dir: str):
-        return StableDiffusionPipeline.from_pretrained(model_dir).to("cuda")
-
-    def warmup(model: torch.nn.Module, prompt: str, num_warms: int):
-        for _ in range(num_warms):
-            model(prompt)
-
-    @calculate_time
-    def p_infer(model: torch.nn.Module, prompt: str) -> Image.Image:
-        return model(prompt).images[0]
-
-    model = load_model(model_dir)
-    warmup(model, prompt, num_warms)
-
-    image = p_infer(model, prompt)
-    image.save("p_out.jpg")
-
-
-def manual_infer(model_dir: str, prompt: str, num_warms: int = 1):
-
-    @calculate_time
-    def load_model(model_dir: str, config_name: str):
-        return Pipeline.from_pretrained(model_dir, config_name).cuda()
-
-    def warmup(model: torch.nn.Module, prompt: str, num_warms: int):
-        for _ in range(num_warms):
-            model(prompt)
-
-    @calculate_time
-    def m_infer(model: torch.nn.Module, prompt: str) -> Image.Image:
-        return model(prompt)[0]
-
-    model = load_model(model_dir, "model_index.json")
-    warmup(model, prompt, num_warms)
-
-    image = m_infer(model, prompt)
-    image.save("m_out.jpg")
+__all__ = ["Pipeline"]
 
 
 class Pipeline:
@@ -90,6 +26,7 @@ class Pipeline:
         unet: UNet2DConditionModel,
         vae: AutoencoderKL,
         engine_path: str = None,
+        use_trt: bool = False,
     ) -> None:
         self.feature_extractor = feature_extractor
         self.scheduler = scheduler
@@ -98,26 +35,31 @@ class Pipeline:
         self.unet_inchannels = unet.config.in_channels
         self.uset_sample_size = unet.config.sample_size
 
-        if USE_TRT:
+        if use_trt:
+            from backend import TrtSession
             self.unet = TrtSession(engine_path, dtype=torch.float16)
+            del unet
         else:
             self.unet = unet
-            del unet
 
         self.vae = vae
         self.device = "cuda"
         self.dtype = torch.float16
         self.vae_scale_factor = 2**(len(self.vae.config.block_out_channels) -
                                     1)
+        self.use_trt = use_trt
 
     @classmethod
-    def from_pretrained(cls, model_dir: str, config_name: str) -> "Pipeline":
-        # parse config file
+    def from_pretrained(cls,
+                        model_dir: str,
+                        config_name: str,
+                        use_trt: bool = False) -> "Pipeline":
+        # Parse config file.
         config_path = os.path.join(model_dir, config_name)
         assert os.path.exists(config_path)
         with open(config_path, "r") as f:
             config_dict: Dict = json.load(f)
-        # expected modules
+        # Get expected modules.
         expected_modules = inspect.signature(cls.__init__).parameters
         config_dict = {
             k: v
@@ -128,22 +70,25 @@ class Pipeline:
         for name, (library_name, class_name) in config_dict.items():
             module = importlib.import_module(library_name)
             cls_ = getattr(module, class_name)
-            # call from_pretrained to initialize module
+            # Call from_pretrained to initialize module.
             init_kwargs[name] = cls_.from_pretrained(
                 os.path.join(model_dir, name))
 
-        if USE_TRT:
-            # Use TensorRT for UNet
+        if use_trt:
+            # Use TensorRT for UNet.
             engine_path = os.path.join(model_dir, "unet", "trt",
                                        "model.engine")
-            init_kwargs.update({"engine_path": engine_path})
+            init_kwargs.update({
+                "engine_path": engine_path,
+                "use_trt": use_trt
+            })
 
         return cls(**init_kwargs)
 
     def cuda(self):
         self.text_encoder = self.text_encoder.to(self.device)
 
-        if not USE_TRT:
+        if not self.use_trt:
             self.unet = self.unet.to(self.device)
 
         self.vae = self.vae.to(self.device)
@@ -157,15 +102,15 @@ class Pipeline:
         num_inference_steps: int = 50,
         guidance_scale: float = 7.5,
     ):
-        # Encode input prompt
+        # Encode input prompt.
         do_classifier_free_guidance = guidance_scale > 1.0
         prompt_embeds = self.encode_prompt(prompt, do_classifier_free_guidance)
 
-        # Prepare timesteps
+        # Prepare timesteps.
         self.scheduler.set_timesteps(num_inference_steps, device=self.device)
         timesteps = self.scheduler.timesteps
 
-        # Prepare latent variables
+        # Prepare latent variables.
         latents = self.prepare_latents(
             batch_size=1,
             num_channels_latents=self.unet_inchannels,
@@ -174,14 +119,14 @@ class Pipeline:
             dtype=prompt_embeds.dtype,
             device=self.device)
 
-        # Denoising loog
+        # Denoising.
         latents = self.unet_infer(timesteps, latents, prompt_embeds,
                                   do_classifier_free_guidance, guidance_scale)
 
-        # Postprocess
+        # Postprocess.
         image = self.decode_latents(latents)
 
-        # Convert from numpy to PIL
+        # Convert from numpy to PIL.
         image = self.numpy_to_pil(image)
 
         return image
@@ -274,12 +219,24 @@ class Pipeline:
             latent_model_input = self.scheduler.scale_model_input(
                 latent_model_input, t)
 
-            if USE_TRT:
-                noise_pred = self.unet(latent_model_input, t, prompt_embeds)
+            if self.use_trt:
+                input_feed = {
+                    "in_latents": latent_model_input.to(self.unet.dtype),
+                    "timesteps": t,
+                    "prompt_embeds": prompt_embeds.to(self.unet.dtype),
+                }
+                # The dtype is determined by the dtype when initializing TrtSession.
+                output = self.unet(input_feed)
+                output_names = self.unet.output_names
+                assert len(output_names) == 1
+                noise_pred = output[output_names[0]].to(
+                    latent_model_input.dtype)
             else:
                 noise_pred = self.unet(
                     latent_model_input, t,
                     encoder_hidden_states=prompt_embeds).sample
+            assert (not torch.isnan(noise_pred).any()
+                    ), "The output of trt has nan."
 
             if do_classifier_free_guidance:
                 noise_pred_uncond, noise_pred_text = noise_pred.chunk(2)
