@@ -3,7 +3,7 @@ import torch
 import numpy as np
 
 from PIL import Image
-from utils import calculate_time
+from utils import calculate_time, logger
 from diffusers import StableDiffusionPipeline, UNet2DConditionModel
 from diffusers.models.unet_2d_condition import UNet2DConditionOutput
 from core import Pipeline
@@ -14,6 +14,7 @@ from backend import OnnxSession, TrtSession
 @torch.no_grad()
 def pth_inference(model_dir: str,
                   prompt: str,
+                  negative_prompts: str = None,
                   num_warmups: int = 1) -> Image.Image:
 
     @calculate_time
@@ -25,37 +26,50 @@ def pth_inference(model_dir: str,
             model(prompt)
 
     @calculate_time
-    def p_infer(model: torch.nn.Module, prompt: str) -> Image.Image:
-        return model(prompt).images[0]
+    def p_infer(
+        model: torch.nn.Module,
+        prompt: str,
+        negative_prompts: str,
+    ) -> Image.Image:
+        return model(prompt, negative_prompt=negative_prompts).images[0]
 
     model = load_model(model_dir)
     warmup(model, prompt, num_warmups)
 
-    return p_infer(model, prompt)
+    return p_infer(model, prompt, negative_prompts)
 
 
 @torch.no_grad()
 def man_inference(model_dir: str,
                   prompt: str,
+                  negative_prompts: str = None,
+                  use_trt: bool = False,
                   num_warmups: int = 1) -> Image.Image:
+
+    if use_trt:
+        logger.info("Use TensorRT for the inference of UNet.")
 
     @calculate_time
     def load_model(model_dir: str, config_name: str):
         return Pipeline.from_pretrained(model_dir, config_name,
-                                        use_trt=True).cuda()
+                                        use_trt=use_trt).cuda()
 
     def warmup(model: torch.nn.Module, prompt: str, num_warmups: int):
         for _ in range(num_warmups):
             model(prompt)
 
     @calculate_time
-    def m_infer(model: torch.nn.Module, prompt: str) -> Image.Image:
-        return model(prompt)[0]
+    def m_infer(
+        model: torch.nn.Module,
+        prompt: str,
+        negative_prompts: str,
+    ) -> Image.Image:
+        return model(prompt, negative_prompts)[0]
 
     model = load_model(model_dir, "model_index.json")
     warmup(model, prompt, num_warmups)
 
-    return m_infer(model, prompt)
+    return m_infer(model, prompt, negative_prompts)
 
 
 @torch.no_grad()

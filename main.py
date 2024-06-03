@@ -11,12 +11,28 @@ def parse_arguments():
     parser.add_argument("--sd-dir",
                         required=True,
                         type=str,
-                        help="The root directory of StableDiffusion model.")
+                        help="The root directory of stable diffusion model.")
     parser.add_argument(
         "--prompt",
         type=str,
         default="a photo, many cars, wide rodes, beautiful scenes",
         help="The input prompt.")
+    parser.add_argument(
+        "--debug",
+        action="store_true",
+        help="Whether to debug cosine between pytorch, onnx and tensorrt.")
+    parser.add_argument(
+        "--negative-prompts",
+        type=str,
+        help="Negative promptes, the generated images do not contain these.")
+    parser.add_argument(
+        "--use-trt",
+        action="store_true",
+        help="Whether to use TensorRT for the inference of UNet.")
+    parser.add_argument(
+        "--image-path",
+        type=str,
+        help="If this value is given, it is img2img; otherwise, txt2img.")
 
     return parser.parse_args()
 
@@ -55,14 +71,16 @@ if __name__ == "__main__":
         export_engine(onnx_path, engine_path)
 
     # Compare cosine between pytorch, onnxruntime and tensorrt.
-    pth_output = pth_unet_infer(args.sd_dir, input_feed)
-    ort_output = ort_unet_infer(onnx_path, input_feed)
-    trt_output = trt_unet_infer(engine_path, input_feed)
-    get_cosine(pth_output, ort_output, "Pytorch and Onnxruntime")
-    get_cosine(pth_output, trt_output, "Pytorch and Tensorrt")
+    if args.debug:
+        pth_output = pth_unet_infer(args.sd_dir, input_feed)
+        ort_output = ort_unet_infer(onnx_path, input_feed)
+        trt_output = trt_unet_infer(engine_path, input_feed)
+        get_cosine(pth_output, ort_output, "Pytorch and Onnxruntime")
+        get_cosine(pth_output, trt_output, "Pytorch and Tensorrt")
 
     # # Inference to generate image.
-    image = pth_inference(args.sd_dir, args.prompt)
+    image = pth_inference(args.sd_dir, args.prompt, args.negative_prompts)
     image.save("pth_out.jpg")
-    image = man_inference(args.sd_dir, args.prompt)
+    image = man_inference(args.sd_dir, args.prompt, args.negative_prompts,
+                          args.use_trt)
     image.save("trt_out.jpg")

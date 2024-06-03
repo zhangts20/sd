@@ -99,18 +99,21 @@ class Pipeline:
     def __call__(
         self,
         prompt: str,
+        negative_prompts: str = None,
         num_inference_steps: int = 50,
         guidance_scale: float = 7.5,
     ):
-        # Encode input prompt.
+        # Encode input prompt, and negative prompt when guidance_scale larger than 1.0.
         do_classifier_free_guidance = guidance_scale > 1.0
-        prompt_embeds = self.encode_prompt(prompt, do_classifier_free_guidance)
+        prompt_embeds = self.encode_prompt(prompt,
+                                           do_classifier_free_guidance,
+                                           negative_prompts=negative_prompts)
 
-        # Prepare timesteps.
+        # TODO: Prepare timesteps.
         self.scheduler.set_timesteps(num_inference_steps, device=self.device)
         timesteps = self.scheduler.timesteps
 
-        # Prepare latent variables.
+        # Prepare latent used as input of UNet.
         latents = self.prepare_latents(
             batch_size=1,
             num_channels_latents=self.unet_inchannels,
@@ -136,7 +139,9 @@ class Pipeline:
         self,
         prompt: str,
         do_classifier_free_guidance: bool,
+        negative_prompts: str = None,
     ) -> torch.Tensor:
+        # Pad input to model_max_length and do truncation if necessary.
         text_input_ids: torch.Tensor = self.tokenizer(
             prompt,
             padding="max_length",
@@ -144,14 +149,18 @@ class Pipeline:
             truncation=True,
             return_tensors="pt").input_ids
 
+        # (bs, model_max_length, hidden_size)
         prompt_embeds: torch.Tensor = self.text_encoder(
             text_input_ids.to(device=self.device))[0]
         prompt_embeds = prompt_embeds.to(self.text_encoder.dtype)
 
+        # Add negative prompt.
         if do_classifier_free_guidance:
+            if negative_prompts is None:
+                negative_prompts = [""]
             max_length = prompt_embeds.shape[1]
             uncond_input_ids: torch.Tensor = self.tokenizer(
-                [""],
+                negative_prompts,
                 padding="max_length",
                 max_length=max_length,
                 truncation=True,
@@ -160,9 +169,8 @@ class Pipeline:
             negative_prompt_embeds: torch.Tensor = self.text_encoder(
                 uncond_input_ids.to(device=self.device))[0].to(
                     self.text_encoder.dtype)
-            negative_prompt_embeds = negative_prompt_embeds.to(
-                self.text_encoder.dtype)
 
+            # (2 * bs, model_max_length, hidden_size)
             prompt_embeds = torch.cat([negative_prompt_embeds, prompt_embeds])
 
         return prompt_embeds
