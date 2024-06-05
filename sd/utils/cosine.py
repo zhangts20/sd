@@ -1,7 +1,7 @@
 import torch
 import numpy as np
 
-from utils import logger
+from sd.utils import logger
 
 
 def get_cosine(tensor1: torch.Tensor | np.ndarray,

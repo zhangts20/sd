@@ -3,29 +3,31 @@ import torch
 import numpy as np
 
 from PIL import Image
-from utils import calculate_time, logger
+from typing import Dict
 from diffusers import StableDiffusionPipeline, UNet2DConditionModel
 from diffusers.models.unet_2d_condition import UNet2DConditionOutput
-from core import Pipeline
-from typing import Dict
-from backend import OnnxSession, TrtSession
+from sd.core import Pipeline
+from sd.utils import calculate_time, logger
+from sd.backend import OnnxSession, TrtSession
 
 
 @torch.no_grad()
-def pth_inference(model_dir: str,
-                  prompt: str,
-                  negative_prompts: str = None,
-                  num_warmups: int = 1) -> Image.Image:
+def pth_img2img_inference(model_dir: str,
+                          prompt: str,
+                          negative_prompts: str = None,
+                          num_warmups: int = 1) -> Image.Image:
 
-    @calculate_time
+    @calculate_time(show=True)
     def load_model(model_dir: str):
         return StableDiffusionPipeline.from_pretrained(model_dir).to("cuda")
 
     def warmup(model: torch.nn.Module, prompt: str, num_warmups: int):
+        logger.info("Begin warmup.")
         for _ in range(num_warmups):
             model(prompt)
+        logger.info("Finish warmup.")
 
-    @calculate_time
+    @calculate_time(show=True)
     def p_infer(
         model: torch.nn.Module,
         prompt: str,
@@ -40,25 +42,28 @@ def pth_inference(model_dir: str,
 
 
 @torch.no_grad()
-def man_inference(model_dir: str,
-                  prompt: str,
-                  negative_prompts: str = None,
-                  use_trt: bool = False,
-                  num_warmups: int = 1) -> Image.Image:
+def img2img_inference(model_dir: str,
+                      prompt: str,
+                      negative_prompts: str = None,
+                      use_trt: bool = False,
+                      num_warmups: int = 1) -> Image.Image:
 
     if use_trt:
         logger.info("Use TensorRT for the inference of UNet.")
 
-    @calculate_time
+    @calculate_time(show=True)
     def load_model(model_dir: str, config_name: str):
-        return Pipeline.from_pretrained(model_dir, config_name,
+        return Pipeline.from_pretrained(model_dir,
+                                        config_name,
                                         use_trt=use_trt).cuda()
 
     def warmup(model: torch.nn.Module, prompt: str, num_warmups: int):
+        logger.debug("Begin to warmup...")
         for _ in range(num_warmups):
             model(prompt)
+        logger.debug("Finish to warmup..")
 
-    @calculate_time
+    @calculate_time(show=True)
     def m_infer(
         model: torch.nn.Module,
         prompt: str,

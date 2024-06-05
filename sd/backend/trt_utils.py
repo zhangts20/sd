@@ -32,7 +32,6 @@ _trt_to_torch_dtype_dict = {
     trt.int8: torch.int8,
     trt.bool: torch.bool,
     trt.bfloat16: torch.bfloat16,
-    trt.fp8: torch.float8_e4m3fn,
 }
 
 _torch_to_trt_dtype_dict = {

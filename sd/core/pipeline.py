@@ -10,7 +10,7 @@ from tqdm import tqdm
 from typing import Dict, Any
 from transformers import CLIPImageProcessor, CLIPTextModel, CLIPTokenizer
 from diffusers import PNDMScheduler, UNet2DConditionModel, AutoencoderKL
-from utils import calculate_time
+from sd.utils import calculate_time
 
 __all__ = ["Pipeline"]
 
@@ -36,7 +36,7 @@ class Pipeline:
         self.uset_sample_size = unet.config.sample_size
 
         if use_trt:
-            from backend import TrtSession
+            from sd.backend import TrtSession
             self.unet = TrtSession(engine_path, dtype=torch.float16)
             del unet
         else:
@@ -78,6 +78,7 @@ class Pipeline:
             # Use TensorRT for UNet.
             engine_path = os.path.join(model_dir, "unet", "trt",
                                        "model.engine")
+            assert os.path.exists(engine_path), f"{engine_path} doesn't exist"
             init_kwargs.update({
                 "engine_path": engine_path,
                 "use_trt": use_trt
@@ -134,7 +135,7 @@ class Pipeline:
 
         return image
 
-    @calculate_time
+    @calculate_time(show=True)
     def encode_prompt(
         self,
         prompt: str,
@@ -175,7 +176,7 @@ class Pipeline:
 
         return prompt_embeds
 
-    @calculate_time
+    @calculate_time(show=True)
     def prepare_latents(
         self,
         batch_size: int,
@@ -192,7 +193,7 @@ class Pipeline:
 
         return latents * self.scheduler.init_noise_sigma
 
-    @calculate_time
+    @calculate_time(show=True)
     def decode_latents(self, latents: torch.Tensor) -> np.ndarray:
         latents = 1 / self.vae.config.scaling_factor * latents
         image = self.vae.decode(latents).sample
@@ -216,7 +217,7 @@ class Pipeline:
 
         return pil_images
 
-    @calculate_time
+    @calculate_time(show=True)
     def unet_infer(self, timesteps: int, latents: torch.Tensor,
                    prompt_embeds: torch.Tensor,
                    do_classifier_free_guidance: bool,
