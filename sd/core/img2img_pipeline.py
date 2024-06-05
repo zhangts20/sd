@@ -10,12 +10,13 @@ from tqdm import tqdm
 from typing import Dict, Any
 from transformers import CLIPImageProcessor, CLIPTextModel, CLIPTokenizer
 from diffusers import PNDMScheduler, UNet2DConditionModel, AutoencoderKL
-from utils import calculate_time
+from sd.utils import calculate_time
+from diffusers.image_processor import VaeImageProcessor
 
-__all__ = ["Pipeline"]
+__all__ = ["Img2ImgPipeline"]
 
 
-class Pipeline:
+class Img2ImgPipeline:
 
     def __init__(
         self,
@@ -36,7 +37,7 @@ class Pipeline:
         self.uset_sample_size = unet.config.sample_size
 
         if use_trt:
-            from backend import TrtSession
+            from sd.backend import TrtSession
             self.unet = TrtSession(engine_path, dtype=torch.float16)
             del unet
         else:
@@ -47,13 +48,15 @@ class Pipeline:
         self.dtype = torch.float16
         self.vae_scale_factor = 2**(len(self.vae.config.block_out_channels) -
                                     1)
+        self.image_processor = VaeImageProcessor(
+            vae_scale_factor=self.vae_scale_factor)
         self.use_trt = use_trt
 
     @classmethod
     def from_pretrained(cls,
                         model_dir: str,
                         config_name: str,
-                        use_trt: bool = False) -> "Pipeline":
+                        use_trt: bool = False) -> "Img2ImgPipeline":
         # Parse config file.
         config_path = os.path.join(model_dir, config_name)
         assert os.path.exists(config_path)
@@ -78,6 +81,7 @@ class Pipeline:
             # Use TensorRT for UNet.
             engine_path = os.path.join(model_dir, "unet", "trt",
                                        "model.engine")
+            assert os.path.exists(engine_path), f"{engine_path} doesn't exist"
             init_kwargs.update({
                 "engine_path": engine_path,
                 "use_trt": use_trt
@@ -95,104 +99,6 @@ class Pipeline:
 
         return self
 
-    @torch.no_grad()
-    def __call__(
-        self,
-        prompt: str,
-        num_inference_steps: int = 50,
-        guidance_scale: float = 7.5,
-    ):
-        # Encode input prompt.
-        do_classifier_free_guidance = guidance_scale > 1.0
-        prompt_embeds = self.encode_prompt(prompt, do_classifier_free_guidance)
-
-        # Prepare timesteps.
-        self.scheduler.set_timesteps(num_inference_steps, device=self.device)
-        timesteps = self.scheduler.timesteps
-
-        # Prepare latent variables.
-        latents = self.prepare_latents(
-            batch_size=1,
-            num_channels_latents=self.unet_inchannels,
-            height=self.uset_sample_size * self.vae_scale_factor,
-            width=self.uset_sample_size * self.vae_scale_factor,
-            dtype=prompt_embeds.dtype,
-            device=self.device)
-
-        # Denoising.
-        latents = self.unet_infer(timesteps, latents, prompt_embeds,
-                                  do_classifier_free_guidance, guidance_scale)
-
-        # Postprocess.
-        image = self.decode_latents(latents)
-
-        # Convert from numpy to PIL.
-        image = self.numpy_to_pil(image)
-
-        return image
-
-    @calculate_time
-    def encode_prompt(
-        self,
-        prompt: str,
-        do_classifier_free_guidance: bool,
-    ) -> torch.Tensor:
-        text_input_ids: torch.Tensor = self.tokenizer(
-            prompt,
-            padding="max_length",
-            max_length=self.tokenizer.model_max_length,
-            truncation=True,
-            return_tensors="pt").input_ids
-
-        prompt_embeds: torch.Tensor = self.text_encoder(
-            text_input_ids.to(device=self.device))[0]
-        prompt_embeds = prompt_embeds.to(self.text_encoder.dtype)
-
-        if do_classifier_free_guidance:
-            max_length = prompt_embeds.shape[1]
-            uncond_input_ids: torch.Tensor = self.tokenizer(
-                [""],
-                padding="max_length",
-                max_length=max_length,
-                truncation=True,
-                return_tensors="pt").input_ids
-
-            negative_prompt_embeds: torch.Tensor = self.text_encoder(
-                uncond_input_ids.to(device=self.device))[0].to(
-                    self.text_encoder.dtype)
-            negative_prompt_embeds = negative_prompt_embeds.to(
-                self.text_encoder.dtype)
-
-            prompt_embeds = torch.cat([negative_prompt_embeds, prompt_embeds])
-
-        return prompt_embeds
-
-    @calculate_time
-    def prepare_latents(
-        self,
-        batch_size: int,
-        num_channels_latents: int,
-        height: int,
-        width: int,
-        dtype: torch.dtype,
-        device: torch.device,
-    ) -> torch.Tensor:
-        shape = (batch_size, num_channels_latents,
-                 height // self.vae_scale_factor,
-                 width // self.vae_scale_factor)
-        latents = torch.randn(shape, dtype=dtype, device=device)
-
-        return latents * self.scheduler.init_noise_sigma
-
-    @calculate_time
-    def decode_latents(self, latents: torch.Tensor) -> np.ndarray:
-        latents = 1 / self.vae.config.scaling_factor * latents
-        image = self.vae.decode(latents).sample
-        image = (image / 2 + 0.5).clamp(0, 1)
-        image = image.cpu().permute(0, 2, 3, 1).float().numpy()
-
-        return image
-
     @staticmethod
     def numpy_to_pil(images: np.ndarray) -> Image.Image:
         if images.ndim == 3:
@@ -208,7 +114,117 @@ class Pipeline:
 
         return pil_images
 
-    @calculate_time
+    @torch.no_grad()
+    def __call__(
+        self,
+        prompt: str,
+        image: Image.Image,
+        negative_prompts: str = None,
+        num_inference_steps: int = 40,
+        guidance_scale: float = 7.5,
+    ) -> Image.Image:
+        # Encode input prompt, and negative prompt when guidance_scale larger than 1.0.
+        do_classifier_free_guidance = guidance_scale > 1.0
+        prompt_embeds = self.encode_prompt(prompt,
+                                           do_classifier_free_guidance,
+                                           negative_prompts=negative_prompts)
+
+        # Preprocess image
+        image = self.image_processor.preprocess(image)
+
+        # TODO: Prepare timesteps.
+        self.scheduler.set_timesteps(num_inference_steps, device=self.device)
+        timesteps = self.scheduler.timesteps
+
+        # Prepare latent used as input of UNet.
+        latents = self.prepare_latents(image=image,
+                                       timesteps=timesteps[:1],
+                                       dtype=prompt_embeds.dtype,
+                                       device=self.device)
+
+        # Denoising.
+        latents = self.unet_infer(timesteps, latents, prompt_embeds,
+                                  do_classifier_free_guidance, guidance_scale)
+
+        # Postprocess.
+        image = self.decode_latents(latents)[0]
+
+        # Convert from numpy to PIL.
+        image = self.numpy_to_pil(image)
+
+        return image
+
+    @calculate_time(show=True)
+    def encode_prompt(
+        self,
+        prompt: str,
+        do_classifier_free_guidance: bool,
+        negative_prompts: str = None,
+    ) -> torch.Tensor:
+        # Pad input to model_max_length and do truncation if necessary.
+        text_input_ids: torch.Tensor = self.tokenizer(
+            prompt,
+            padding="max_length",
+            max_length=self.tokenizer.model_max_length,
+            truncation=True,
+            return_tensors="pt").input_ids
+
+        # (bs, model_max_length, hidden_size)
+        prompt_embeds: torch.Tensor = self.text_encoder(
+            text_input_ids.to(device=self.device))[0]
+        prompt_embeds = prompt_embeds.to(self.text_encoder.dtype)
+
+        # Add negative prompt.
+        if do_classifier_free_guidance:
+            if negative_prompts is None:
+                negative_prompts = [""]
+            max_length = prompt_embeds.shape[1]
+            uncond_input_ids: torch.Tensor = self.tokenizer(
+                negative_prompts,
+                padding="max_length",
+                max_length=max_length,
+                truncation=True,
+                return_tensors="pt").input_ids
+
+            negative_prompt_embeds: torch.Tensor = self.text_encoder(
+                uncond_input_ids.to(device=self.device))[0].to(
+                    self.text_encoder.dtype)
+
+            # (2 * bs, model_max_length, hidden_size)
+            prompt_embeds = torch.cat([negative_prompt_embeds, prompt_embeds])
+
+        return prompt_embeds
+
+    @calculate_time(show=True)
+    def prepare_latents(
+        self,
+        image: torch.Tensor,
+        timesteps: torch.Tensor,
+        dtype: torch.dtype,
+        device: torch.device,
+    ) -> torch.Tensor:
+        image = image.to(device=self.device, dtype=dtype)
+
+        init_latents = self.vae.encode(image).latent_dist.sample(
+            generator=None) * self.vae.config.scaling_factor
+        init_latents = torch.cat([init_latents], dim=0)
+
+        # add noise to get latents
+        noise = torch.randn(init_latents.shape, dtype=dtype, device=device)
+        latents = self.scheduler.add_noise(init_latents, noise, timesteps)
+
+        return latents
+
+    @calculate_time(show=True)
+    def decode_latents(self, latents: torch.Tensor) -> np.ndarray:
+        latents = 1 / self.vae.config.scaling_factor * latents
+        image = self.vae.decode(latents).sample
+        image = (image / 2 + 0.5).clamp(0, 1)
+        image = image.cpu().permute(0, 2, 3, 1).float().numpy()
+
+        return image
+
+    @calculate_time(show=True)
     def unet_infer(self, timesteps: int, latents: torch.Tensor,
                    prompt_embeds: torch.Tensor,
                    do_classifier_free_guidance: bool,
