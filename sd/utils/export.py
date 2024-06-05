@@ -1,10 +1,11 @@
+import os
 import onnx
 import torch
 import tensorrt as trt
 
 from typing import Dict, List
 from onnxsim import simplify
-from . import logger
+from sd.utils.logger import sd_logger
 
 __all__ = ["export_onnx", "export_engine"]
 
@@ -23,6 +24,9 @@ def export_onnx(model: torch.nn.Module, input_feed: Dict[str, torch.Tensor],
         opset_version=17,
         input_names=input_names,
         output_names=output_names,
+        dynamic_axes={
+            "in_latents": {0: "batch_size", 2: "height", 3: "width"},
+        }
     )
 
     # Simplify
@@ -31,7 +35,9 @@ def export_onnx(model: torch.nn.Module, input_feed: Dict[str, torch.Tensor],
     assert check
     onnx.save(model_sim, onnx_path)
 
-    logger.info(f"Export ONNX to {onnx_path} successfully.")
+    sd_logger.info(f"Export ONNX to {onnx_path} successfully.")
+
+    os.remove(onnx_temp_path)
 
 
 def export_engine(onnx_path: str, engine_path: str) -> None:
@@ -43,11 +49,23 @@ def export_engine(onnx_path: str, engine_path: str) -> None:
     config = builder.create_builder_config()
     # Set flag of data type.
     # https://docs.nvidia.com/deeplearning/tensorrt/api/python_api/infer/Core/BuilderConfig.html
-    config.set_flag(trt.BuilderFlag.FP16 | trt.BuilderFlag.BF16)
+    config.set_flag(trt.BuilderFlag.FP16)
     # Parse ONNX model.
     parser = trt.OnnxParser(network, logger)
     with open(onnx_path, "rb") as model:
         parser.parse(model.read(), onnx_path)
+
+    # The first input is dynamic shape
+    profile = builder.create_optimization_profile()
+
+    nMin = [1, 4, 64, 64]
+    nOpt = [2, 4, 64, 64]
+    nMax = [2, 4, 64, 128]
+
+    in_latents = network.get_input(0)
+    in_latents.shape = [-1, 4, -1, -1]
+    profile.set_shape(in_latents.name, nMin, nOpt, nMax)
+    config.add_optimization_profile(profile)
 
     # Set precision for some layers.
     # https://docs.nvidia.com/deeplearning/tensorrt/api/python_api/infer/FoundationalTypes/DataType.html?
@@ -63,4 +81,4 @@ def export_engine(onnx_path: str, engine_path: str) -> None:
     with open(engine_path, "wb") as f:
         f.write(engine)
 
-    logger.info(f"Export Engine to {engine_path} successfully.")
+    sd_logger.info(f"Export Engine to {engine_path} successfully.")

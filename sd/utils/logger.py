@@ -39,4 +39,4 @@ class Logger:
         self.logger.critical(message)
 
 
-logger = Logger()
+sd_logger = Logger()

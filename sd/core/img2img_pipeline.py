@@ -11,11 +11,12 @@ from typing import Dict, Any
 from transformers import CLIPImageProcessor, CLIPTextModel, CLIPTokenizer
 from diffusers import PNDMScheduler, UNet2DConditionModel, AutoencoderKL
 from sd.utils import calculate_time
+from diffusers.image_processor import VaeImageProcessor
 
-__all__ = ["Pipeline"]
+__all__ = ["Img2ImgPipeline"]
 
 
-class Pipeline:
+class Img2ImgPipeline:
 
     def __init__(
         self,
@@ -47,13 +48,15 @@ class Pipeline:
         self.dtype = torch.float16
         self.vae_scale_factor = 2**(len(self.vae.config.block_out_channels) -
                                     1)
+        self.image_processor = VaeImageProcessor(
+            vae_scale_factor=self.vae_scale_factor)
         self.use_trt = use_trt
 
     @classmethod
     def from_pretrained(cls,
                         model_dir: str,
                         config_name: str,
-                        use_trt: bool = False) -> "Pipeline":
+                        use_trt: bool = False) -> "Img2ImgPipeline":
         # Parse config file.
         config_path = os.path.join(model_dir, config_name)
         assert os.path.exists(config_path)
@@ -96,39 +99,55 @@ class Pipeline:
 
         return self
 
+    @staticmethod
+    def numpy_to_pil(images: np.ndarray) -> Image.Image:
+        if images.ndim == 3:
+            images = images[None, ...]
+
+        images = (images * 255).round().astype("uint8")
+        if images.shape[-1] == 1:
+            pil_images = [
+                Image.fromarray(image.squeeze(), mode="L") for image in images
+            ]
+        else:
+            pil_images = [Image.fromarray(image) for image in images]
+
+        return pil_images
+
     @torch.no_grad()
     def __call__(
         self,
         prompt: str,
+        image: Image.Image,
         negative_prompts: str = None,
-        num_inference_steps: int = 50,
+        num_inference_steps: int = 40,
         guidance_scale: float = 7.5,
-    ):
+    ) -> Image.Image:
         # Encode input prompt, and negative prompt when guidance_scale larger than 1.0.
         do_classifier_free_guidance = guidance_scale > 1.0
         prompt_embeds = self.encode_prompt(prompt,
                                            do_classifier_free_guidance,
                                            negative_prompts=negative_prompts)
 
+        # Preprocess image
+        image = self.image_processor.preprocess(image)
+
         # TODO: Prepare timesteps.
         self.scheduler.set_timesteps(num_inference_steps, device=self.device)
         timesteps = self.scheduler.timesteps
 
         # Prepare latent used as input of UNet.
-        latents = self.prepare_latents(
-            batch_size=1,
-            num_channels_latents=self.unet_inchannels,
-            height=self.uset_sample_size * self.vae_scale_factor,
-            width=self.uset_sample_size * self.vae_scale_factor,
-            dtype=prompt_embeds.dtype,
-            device=self.device)
+        latents = self.prepare_latents(image=image,
+                                       timesteps=timesteps[:1],
+                                       dtype=prompt_embeds.dtype,
+                                       device=self.device)
 
         # Denoising.
         latents = self.unet_infer(timesteps, latents, prompt_embeds,
                                   do_classifier_free_guidance, guidance_scale)
 
         # Postprocess.
-        image = self.decode_latents(latents)
+        image = self.decode_latents(latents)[0]
 
         # Convert from numpy to PIL.
         image = self.numpy_to_pil(image)
@@ -179,19 +198,22 @@ class Pipeline:
     @calculate_time(show=True)
     def prepare_latents(
         self,
-        batch_size: int,
-        num_channels_latents: int,
-        height: int,
-        width: int,
+        image: torch.Tensor,
+        timesteps: torch.Tensor,
         dtype: torch.dtype,
         device: torch.device,
     ) -> torch.Tensor:
-        shape = (batch_size, num_channels_latents,
-                 height // self.vae_scale_factor,
-                 width // self.vae_scale_factor)
-        latents = torch.randn(shape, dtype=dtype, device=device)
+        image = image.to(device=self.device, dtype=dtype)
 
-        return latents * self.scheduler.init_noise_sigma
+        init_latents = self.vae.encode(image).latent_dist.sample(
+            generator=None) * self.vae.config.scaling_factor
+        init_latents = torch.cat([init_latents], dim=0)
+
+        # add noise to get latents
+        noise = torch.randn(init_latents.shape, dtype=dtype, device=device)
+        latents = self.scheduler.add_noise(init_latents, noise, timesteps)
+
+        return latents
 
     @calculate_time(show=True)
     def decode_latents(self, latents: torch.Tensor) -> np.ndarray:
@@ -201,21 +223,6 @@ class Pipeline:
         image = image.cpu().permute(0, 2, 3, 1).float().numpy()
 
         return image
-
-    @staticmethod
-    def numpy_to_pil(images: np.ndarray) -> Image.Image:
-        if images.ndim == 3:
-            images = images[None, ...]
-
-        images = (images * 255).round().astype("uint8")
-        if images.shape[-1] == 1:
-            pil_images = [
-                Image.fromarray(image.squeeze(), mode="L") for image in images
-            ]
-        else:
-            pil_images = [Image.fromarray(image) for image in images]
-
-        return pil_images
 
     @calculate_time(show=True)
     def unet_infer(self, timesteps: int, latents: torch.Tensor,

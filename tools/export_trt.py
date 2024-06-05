@@ -2,7 +2,7 @@ import os
 import torch
 import argparse
 
-from sd.core import Pipeline, pth_unet_infer, ort_unet_infer, trt_unet_infer
+from sd.core import Txt2ImgPipeline, pth_unet_infer, ort_unet_infer, trt_unet_infer
 from sd.utils import export_onnx, export_engine, get_cosine
 
 
@@ -12,6 +12,12 @@ def parse_arguments():
                         required=True,
                         type=str,
                         help="The root directory of stable diffusion model.")
+    parser.add_argument("--force-onnx",
+                        action="store_true",
+                        help="Whether to export onnx forcibly.")
+    parser.add_argument("--force-engine",
+                        action="store_true",
+                        help="Whether to export engine forcibly.")
 
     return parser.parse_args()
 
@@ -36,9 +42,10 @@ if __name__ == "__main__":
         "prompt_embeds": prompt_embeds,
     }
     # Initialize pytorch pipeline.
-    pipeline = Pipeline.from_pretrained(args.sd_dir, "model_index.json").cuda()
+    pipeline = Txt2ImgPipeline.from_pretrained(args.sd_dir,
+                                               "model_index.json").cuda()
     onnx_path = os.path.join(args.sd_dir, "unet", "onnx", "model.onnx")
-    if not os.path.exists(onnx_path):
+    if not os.path.exists(onnx_path) or args.force_onnx:
         export_onnx(pipeline.unet.to(dtype=dtype),
                     input_feed,
                     output_names=["out_latents"],
@@ -46,7 +53,7 @@ if __name__ == "__main__":
 
     # Export onnx model to engine model.
     engine_path = os.path.join(args.sd_dir, "unet", "trt", "model.engine")
-    if not os.path.exists(engine_path):
+    if not os.path.exists(engine_path) or args.force_engine:
         export_engine(onnx_path, engine_path)
 
     # Compare cosine between pytorch, onnxruntime and tensorrt.

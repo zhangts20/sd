@@ -1,7 +1,7 @@
 import os
 import argparse
 
-from sd.core import txt2img_inference
+from sd.core import img2img_inference
 
 
 def parse_arguments():
@@ -23,6 +23,10 @@ def parse_arguments():
         "--use-trt",
         action="store_true",
         help="Whether to use TensorRT for the inference of UNet.")
+    parser.add_argument("--in-img-path",
+                        type=str,
+                        required=True,
+                        help="The path of input image.")
     parser.add_argument("--out-img-path",
                         type=str,
                         default="out/out.jpg",
@@ -44,11 +48,11 @@ if __name__ == "__main__":
         os.mkdir(dirname)
 
     if args.use_pipeline:
-        from sd.core import pth_txt2img_inference
-        image = pth_txt2img_inference(args.sd_dir, args.prompt,
-                                      args.negative_prompts)
+        from sd.core import pth_img2img_inference
+        image = pth_img2img_inference(args.sd_dir, args.prompt,
+                                      args.in_img_path, args.negative_prompts)
         image.save("./out/pipeline.jpg")
 
-    image = txt2img_inference(args.sd_dir, args.prompt, args.negative_prompts,
-                              args.use_trt)
+    image = img2img_inference(args.sd_dir, args.prompt, args.in_img_path,
+                              args.negative_prompts, args.use_trt)
     image.save(args.out_img_path)

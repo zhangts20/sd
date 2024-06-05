@@ -1,7 +1,7 @@
 import time
 import torch
 
-from sd.utils import logger
+from sd.utils import sd_logger
 
 
 def calculate_time(show=True):
@@ -16,7 +16,7 @@ def calculate_time(show=True):
             torch.cuda.synchronize()
             if show:
                 end_time = time.time()
-                logger.info(
+                sd_logger.info(
                     f"Function {func.__name__} took {round(end_time - start_time, 4)} seconds to execute"
                 )
             return result
