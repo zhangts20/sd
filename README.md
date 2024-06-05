@@ -21,6 +21,25 @@
 
 导出模型精度为 float16，同时模型的输入类型为 float16，int64 和 float16。由于在导出 ONNX 模型时，输入类型和权重类型必须匹配（导出模型是会走 Pytorch 的前向推理），所以输入类型必须为 float16 的（尽管在实际推理中 UNet 部分的输入类型是 float32 的）。**否则会出现 Nan 的输出，导致黑图的出现，导出模型精度只有两个九，导致生成的图有些许抽象**
 
+## Run
+由于 txt2img 和 img2img 可以共用一个导出的 UNet 的 TensorRT 模型，所以导出一个动态的模型即可。导出模型：
+```shell
+python tools/export_trt.py --sd-dir /data/models/stable-diffusion-v1-4
+```
+使用 --force-onnx 或者 --force-engine 强制重新导出模型，否则使用已有模型。导出模型位于 unet 目录下的 onnx 和 trt 下。
+
+**txt2img**
+```shell
+python tools/txt2img --sd-dir /data/models/stable-diffusion-v1-4
+```
+其他可选选项：`--prompt` 指定输入 prompt，`--negative-prompts` 指定不想在生成的图中出现的元素，`--use-trt` 是否使用 TensorRT 推理 UNet 部分，`--out-img-path` 指定输出图像路径，`--use-pipeline` 使用 diffuers 库推理并将结果存到 out/pipeline.jpg 中。
+
+**img2img**
+```shell
+python tools/img2img --sd-dir /data/models/stable-diffusion-v1-4 --in-img-path ./images/sketch-mountains-input.jpg
+```
+其他可选选项同上。
+
 ## Architecture
 #### text_encoder
 ```txt
