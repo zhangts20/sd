@@ -1,4 +1,5 @@
 ## Native Pytorch Inference and TensorRT Inference
+NVIDIA A100-SXM4-80GB, CUDA 12.1, Pytorch 2.2.0+cu121, Python 3.10.12
 
 **txt2img**
 
@@ -15,7 +16,6 @@
 | pytorch + tensorrt | 1.6238 | 将 UNet 部分转换为 TensorRT 的 float16 类型 |
 
 ## 模型转换
-
 
 ~~UNet 部分有三个输入形状分别是 `[2,4,64,64]` scaler 和 `[2,77,768]`，输出形状是 `[2,4,64,64]`~~。UNet 有三个输入，第一个输入是动态可变的，暂时搞成除了第二维都可变。
 
@@ -41,37 +41,23 @@ python tools/img2img --sd-dir /data/models/stable-diffusion-v1-4 --in-img-path .
 其他可选选项同上。
 
 ## Architecture
-#### text_encoder
-```txt
-CLIPTextModel(
-  (text_model): CLIPTextTransformer(
-    (embeddings): CLIPTextEmbeddings(
-      (token_embedding): Embedding(49408, 768)
-      (position_embedding): Embedding(77, 768)
-    )
-    (encoder): CLIPEncoder(
-      (layers): ModuleList(
-        (0-11): 12 x CLIPEncoderLayer(
-          (self_attn): CLIPAttention(
-            (k_proj): Linear(in_features=768, out_features=768, bias=True)
-            (v_proj): Linear(in_features=768, out_features=768, bias=True)
-            (q_proj): Linear(in_features=768, out_features=768, bias=True)
-            (out_proj): Linear(in_features=768, out_features=768, bias=True)
-          )
-          (layer_norm1): LayerNorm((768,), eps=1e-05, elementwise_affine=True)
-          (mlp): CLIPMLP(
-            (activation_fn): QuickGELUActivation()
-            (fc1): Linear(in_features=768, out_features=3072, bias=True)
-            (fc2): Linear(in_features=3072, out_features=768, bias=True)
-          )
-          (layer_norm2): LayerNorm((768,), eps=1e-05, elementwise_affine=True)
-        )
-      )
-    )
-    (final_layer_norm): LayerNorm((768,), eps=1e-05, elementwise_affine=True)
-  )
-)
-```
+### text_encoder
+这部分的输入形状是 `(batch, model_max_length, hidden_size=768)`，输出形状不变。第二维从 `tokenizer/tokenizer_config.json` 获得，第三维从 `text_encoder/config.json` 获得。这部分负责将输入文本编码成特征向量。在编码文本输入时，如果指定了反向提示词（negative prompt），则还会编码这部分内容且和前面内容在第一维拼接，即 `(batch*2, model_max_length, 768)`。
+
+### timesteps
+UNet 的第二个输入，类似于大预言模型中的位置编码。
+
+### prepare latents
+UNet 的第三个输入。在文生图中，随机生成固定（可指定？）形状 `(batch, in_channels, sample_size, sample_size)`的张量，后两个变量从 `unet/config.json`获得；在图生图中，首先会编码输入图像生成 8 倍下采样的特征向量，然后生成随机噪声叠加到图像特征上。
+
+### unet infer
+UNet 部分有三个输入，是整个 Pipeline 的核心流程。通过指定的循环次数后，得到输出 latents。
+
+### decode latents
+这部分的功能是将输出 latents 解码成图像格式。
+
+### vae
+见 prepare_latents 的图生图部分。
 
 ## Q & A
 
