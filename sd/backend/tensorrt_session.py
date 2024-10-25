@@ -5,8 +5,6 @@ import tensorrt as trt
 from dataclasses import dataclass
 from typing import Any, Dict, List
 
-__all__ = ["TrtSession"]
-
 
 @contextlib.contextmanager
 def _scoped_stream():
@@ -37,6 +35,7 @@ _trt_to_torch_dtype_dict = {
 
 _torch_to_trt_dtype_dict = {
     torch.float16: trt.DataType.HALF,
+    torch.float32: trt.DataType.FLOAT,
     torch.int64: trt.DataType.INT64,
 }
 
@@ -69,11 +68,12 @@ class Session:
 
         self.input_names: List[str] = list()
         self.output_names: List[str] = list()
-        for binding in self._engine:
-            if self._engine.binding_is_input(binding):
-                self.input_names.append(binding) 
+        input_output_names = [engine for engine in self._engine]
+        for name in input_output_names:
+            if self._engine.get_tensor_mode(name) == trt.TensorIOMode.INPUT:
+                self.input_names.append(name)
             else:
-                self.output_names.append(binding)
+                self.output_names.append(name)
 
         return self
 
@@ -140,7 +140,7 @@ class TrtSession:
 
     def __init__(self,
                  engine_path: str,
-                 dtype: torch.dtype = torch.float16) -> None:
+                 dtype: torch.dtype = torch.float32) -> None:
         super().__init__()
         self.dtype = dtype
         self.stream = torch.cuda.current_stream().cuda_stream
@@ -154,7 +154,6 @@ class TrtSession:
         self,
         input_feed: Dict[str, torch.Tensor],
     ) -> Dict[str, torch.Tensor]:
-        # Get output of tensorrt.
         trt_outputs = self.session.infer_shapes([
             TensorInfo(k, _torch_to_trt_dtype_dict.get(v.dtype), v.shape)
             for (k, v) in input_feed.items()

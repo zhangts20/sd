@@ -1,2 +1,2 @@
-from .ort_utils import OnnxSession
-from .trt_utils import TrtSession
+from .onnxruntime_session import OnnxSession
+from .tensorrt_session import TrtSession

@@ -1,4 +1,3 @@
 __pycache__
-images
 *.egg-info
-out/
+outputs/

@@ -4,8 +4,6 @@ import onnxruntime as ort
 
 from typing import Dict
 
-__all__ = ["OnnxSession"]
-
 
 class OnnxSession:
 
@@ -19,12 +17,14 @@ class OnnxSession:
         # Convert from tensor to numpy.
         input_feed_np = input_feed.copy()
         for (k, v) in input_feed_np.items():
-            input_feed_np[k] = v.cpu().numpy()
+            if isinstance(v, torch.Tensor):
+                v = v.cpu().numpy()
+            input_feed_np[k] = v
 
         # Get output names.
-        output = self.sess.run(self.output_names, input_feed_np)
+        outputs = self.sess.run(self.output_names, input_feed_np)
 
-        return output
+        return outputs
 
     @property
     def output_names(self) -> Dict[str, np.ndarray]:
