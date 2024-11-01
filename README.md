@@ -1,3 +1,8 @@
+## Requirements
+```shell
+diffusers>=0.31.0
+```
+
 ## 模型转换
 经过 profile 后本项目暂时只对 UNet 部分采用 TensorRT 推理。该网络部分有三个输入：
 1. 如果 do_classifier_free_guidance 为 True 即 guidance_scale 大于 1.0 时，输入会 cat 两个 latents，否则为一个 latents，这会直接影响该变量的**第一个维度**，为 1 或者 2。对于最后两个维度，在文生图任务中由模型配置决定，为 64x64；在图生图任务中，形状为输入图像的 8 倍下采样，所以**最后两个维度为动态的**
@@ -14,7 +19,12 @@ python tools/export_unet.py --model-dir /data/models/stable-diffusion-v1-4
 python tools/offline_inference.py --model-dir /data/models/stable-diffusion-v1-4 --image-path assets/dog.jpg <--use-trt>
 ```
 
-## Q & A
+## Supported Models
+- [stable-diffusion-v1-4](https://huggingface.co/CompVis/stable-diffusion-v1-4) 
+- [stable-diffusion-3.5-large](https://huggingface.co/stabilityai/stable-diffusion-3.5-large)
+
+
+## Q && A
 
 Q: 报错 getPluginCreator could not find plugin: InstanceNormalization_TRT version: 1
 [pluginV2Runner.cpp::load::308] Error Code 1: Serialization (Serialization assertion creator failed.Cannot deserialize plugin since corresponding IPluginCreator not found in Plugin Registry)
@@ -25,6 +35,6 @@ Q: 当导出的 ONNX 模型大于 2GB 时报错 `onnx.onnx_cpp2py_export.checker
 
 A: 将 protobuf 的版本降至 3.20.3.
 
-Q: 运行 TensorRT 的 img2img 时报错 `IExecutionContext::getTensorShape: Error Code 7: Internal Error (/up_blocks.1/Concat: axis 3 dimensions must be equal for concatenation on axis 1. Condition '==' violated: 16 != 15. Instruction: CHECK_EQUAL 16 15.)`
+Q: 运行 TensorRT 的 img2img 时报错 `IExecutionContext::getTensorShape: Error Code 7: Internal Error (/up_blocks.1/Concat: axis 3 dimensions must be equal for concatenation on axis 1. Condition '==' violated: 16 != 15. Instruction: CHECK_EQUAL 16 15.)`，根据不同的输入图有不同的维度匹配错误
 
 A: TODO
