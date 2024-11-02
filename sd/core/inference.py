@@ -55,6 +55,7 @@ def sd3_5_infer(
     model_dir: str,
     prompt: str,
     negative_prompts: str,
+    use_trt: bool,
     num_wramups: int = 1,
     output_dir: str = "outputs",
     dtype: str = "float32",
@@ -62,6 +63,7 @@ def sd3_5_infer(
 ) -> None:
     # Init pipeline.
     pl: SD35Pipeline = SD35Pipeline.from_pretrained(model_dir=model_dir,
+                                                    use_trt=use_trt,
                                                     dtype=dtype,
                                                     device=device)
     pl = pl.cuda()

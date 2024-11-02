@@ -260,12 +260,12 @@ class Pipeline(object):
                 assert len(output_names) == 1
                 noise_pred = output[output_names[0]].to(
                     latent_model_input.dtype)
+                assert (not torch.isnan(noise_pred).any()
+                        ), "The output of TensorRT has nan."
             else:
                 noise_pred = self.unet(
                     latent_model_input, t,
                     encoder_hidden_states=prompt_embeds).sample
-            assert (not torch.isnan(noise_pred).any()
-                    ), "The output of TensorRT has nan."
 
             if do_classifier_free_guidance:
                 noise_pred_uncond, noise_pred_text = noise_pred.chunk(2)

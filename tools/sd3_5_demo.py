@@ -10,4 +10,4 @@ image = pipe(
     num_inference_steps=28,
     guidance_scale=3.5,
 ).images[0]
-image.save("capybara.png")
+image.save("outputs/demo_sd3_5_generated.png")

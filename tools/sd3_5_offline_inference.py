@@ -1,6 +1,8 @@
 import argparse
+import multiprocessing
 
 from sd.core.inference import sd3_5_infer
+from sd.utils import monitor_gpu_memory
 
 
 def parse_arguments():
@@ -16,6 +18,9 @@ def parse_arguments():
     parser.add_argument("--negative-prompts",
                         type=str,
                         help="The negative prompts")
+    parser.add_argument("--use-trt",
+                        action="store_true",
+                        help="Whether use TensorRT for UNet")
     parser.add_argument("--output-dir",
                         type=str,
                         default="outputs",
@@ -23,7 +28,7 @@ def parse_arguments():
     parser.add_argument("--dtype",
                         type=str,
                         default="float32",
-                        choices=["float16", "float32"],
+                        choices=["float16", "bfloat16", "float32"],
                         help="The data type of inference")
     parser.add_argument("--device",
                         type=str,
@@ -38,4 +43,12 @@ if __name__ == "__main__":
     args = parse_arguments()
     args_dict = vars(args)
 
+    stop_event = multiprocessing.Event()
+    monitor_process = multiprocessing.Process(target=monitor_gpu_memory,
+                                              args=(stop_event, ))
+    monitor_process.start()
+
     sd3_5_infer(**args_dict)
+
+    stop_event.set()
+    monitor_process.join()

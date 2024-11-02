@@ -35,8 +35,9 @@ class SD35Pipeline(object):
         tokenizer_3: T5TokenizerFast,
         dtype: str,
         device: str,
+        engine_path: str = None,
+        use_trt: bool = False,
     ) -> None:
-        self.transformer = transformer
         self.scheduler = scheduler
         self.vae = vae
         self.text_encoder = text_encoder
@@ -52,16 +53,30 @@ class SD35Pipeline(object):
             vae_scale_factor=self.vae_scale_factor)
         self.tokenizer_max_length = (self.tokenizer.model_max_length
                                      if self.tokenizer is not None else 77)
-        self.unet_sample_size = (self.transformer.config.sample_size
-                                 if self.transformer is not None else 128)
-        self.patch_size = (self.transformer.config.patch_size
-                           if self.transformer is not None else 2)
+        self.unet_sample_size = (transformer.config.sample_size
+                                 if transformer is not None else 128)
+        self.patch_size = (transformer.config.patch_size
+                           if transformer is not None else 2)
+        self.unet_in_channels = transformer.config.in_channels
 
         self.dtype = getattr(torch, dtype)
         self.device = device
 
+        if use_trt:
+            del transformer
+            from sd.backend import TrtSession
+            sd_logger.info("Use TensorRT for the inference of transformer")
+
+            self.transformer = TrtSession(engine_path=engine_path,
+                                          dtype=self.dtype)
+        else:
+            self.transformer = transformer
+        self.use_trt = use_trt
+
     def cuda(self):
-        self.transformer = self.transformer.to(self.device)
+        if not self.use_trt:
+            self.transformer = self.transformer.to(self.device)
+
         self.vae = self.vae.to(self.device)
         self.text_encoder = self.text_encoder.to(self.device)
         self.text_encoder_2 = self.text_encoder_2.to(self.device)
@@ -70,7 +85,7 @@ class SD35Pipeline(object):
         return self
 
     @classmethod
-    def from_pretrained(cls, model_dir: str, dtype: str,
+    def from_pretrained(cls, model_dir: str, use_trt: bool, dtype: str,
                         device: str) -> "SD35Pipeline":
         # Parse config file
         config_path = os.path.join(model_dir, "model_index.json")
@@ -97,6 +112,19 @@ class SD35Pipeline(object):
             "dtype": dtype,
             "device": device,
         })
+
+        # Use TensorRT for transformer inference
+        if use_trt:
+            engine_path = os.path.join(model_dir, "transformer", "trt",
+                                       "model.engine")
+            if not os.path.exists(engine_path):
+                sd_logger.error(
+                    f"input {engine_path} doesn't exist, please refer to export_sd3_5_unet.py firstly"
+                )
+            init_kwargs.update({
+                "engine_path": engine_path,
+                "use_trt": use_trt,
+            })
 
         return cls(**init_kwargs)
 
@@ -129,10 +157,9 @@ class SD35Pipeline(object):
         timesteps = self.scheduler.timesteps
 
         # Prepare latent used as input of UNet.
-        num_channels_latents = self.transformer.config.in_channels
         latents = self.prepare_latents(
             batch_size=1,
-            num_channels_latents=num_channels_latents,
+            num_channels_latents=self.unet_in_channels,
             height=self.unet_sample_size * self.vae_scale_factor,
             width=self.unet_sample_size * self.vae_scale_factor)
 
@@ -312,19 +339,36 @@ class SD35Pipeline(object):
                 [latents] * 2) if self.do_classifier_free_guidance else latents
             timestep = t.expand(latent_model_input.shape[0])
 
-            noise_pred = self.transformer(
-                hidden_states=latent_model_input,
-                timestep=timestep,
-                encoder_hidden_states=prompt_embeds,
-                pooled_projections=pooled_prompt_embeds,
-                return_dict=False,
-            )[0]
+            if self.use_trt:
+                input_feed = {
+                    "in_latents": latent_model_input.to(self.dtype),
+                    "prompt_embeds": prompt_embeds.to(self.dtype),
+                    "pooled_prompt_embeds":
+                    pooled_prompt_embeds.to(self.dtype),
+                    "timestep": timestep,
+                }
+                # The dtype is determined by the dtype when initializing TrtSession.
+                output = self.transformer(input_feed)
+                output_names = self.transformer.output_names
+                assert len(output_names) == 1
+                noise_pred = output[output_names[0]].to(
+                    latent_model_input.dtype)
+                assert (not torch.isnan(noise_pred).any()
+                        ), "The output of TensorRT has nan."
+            else:
+                noise_pred = self.transformer(
+                    hidden_states=latent_model_input,
+                    timestep=timestep,
+                    encoder_hidden_states=prompt_embeds,
+                    pooled_projections=pooled_prompt_embeds,
+                    return_dict=False,
+                )[0]
 
             if self.do_classifier_free_guidance:
                 noise_pred_uncond, noise_pred_text = noise_pred.chunk(2)
                 noise_pred = noise_pred_uncond + guidance_scale * (
                     noise_pred_text - noise_pred_uncond)
 
-            latents = self.scheduler.step(noise_pred, t, latents).prev_sample
+            latents = self.scheduler.step(noise_pred, t, latents, return_dict=False)[0]
 
         return latents
